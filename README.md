@@ -1,4 +1,4 @@
-# Interpretable-Machine-Learning-with-R
+# Interpretable Machine Learning with R
 
 
 Course materials covering introduction to machine learning, white-box models and tools for interpreting black-box models.
