@@ -1,0 +1,788 @@
+---
+title: "Interpretable Machine Learning"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    self_contained: yes
+    highlight: pygments
+    css: datastart.css
+---
+
+<img src="img/logo.png" width="200" style="position:absolute;top:0px;right:0px;" />
+
+# Introduction
+
+What is **machine learning**? For our purposes, machine learning is a collection of methods for teaching computers to make and improve predictions/estimations based on data. 
+The way this is achieved is by learning a **model**, which is a function deduced from our data. For instance, in the case of email spam classification, we learn a model that will tell us, for a given (and previously unseen) email, what is the probability of it being spam. This model is deduced from a collection of emails which is *annotated*, meaning that we know whether these emails were spam or not. This class of machine learning problems is called **supervised learning** because we have, for each data point, an additional indication (provided by the "supervisor") of the class to which the data point belongs, as in this example, or another value associated to it. Another example of supervised learning is estimating house price given surface, location, size, etc.
+
+In contrast, **unsupervised learning** is concerned with problems on which we have data, but no additional information about it. An example is market segmentation: we have attributes of our customers and we would like to "organize" them (perhaps for a targeted campaign), but we do not know a priori to which segment they belong, nor how many segments are there.
+
+These notes provide practical examples of machine learning to highlight different use cases and situations, both in supervised and unsupervised learning.
+
+## General machine learning strategies
+
+Suppose we are given some data, and we (somehow) derive a model of that data. How do we know if the model is "good"? And what does that even mean?
+
+### Model validation
+We typically split data into training and test data sets:
+
+- **Train Set:** these data are used to estimate model parameters and to pick the values of the complexity parameter(s) for the model.
+
+- **Test Set:** these data can be used to get an independent assessment of model efficacy. They should not be used during model training.
+
+
+In the test set, we measure the performance of the model with different **metrics**. For instance, for classification problems (such as the email spam example) we look into how many errors did the model do: in the test set, we have the **ground truth** (we know already if the email is spam or not) so we compare this ground truth with the prediction of our model.
+
+There is a tradeoff here of course, because too much spent in training won't allow us to get a good assessment of predictive performance. We may find a model that fits the training data very well, but is not generalizable (overfitting). If we use too much data for testing, we won't get a good assessment of model parameters. 
+
+A common strategy is to use around 20% of the data for testing and the rest for training, but this is not carved in stone. In many situations we may use only 10% of the data for testing. 
+
+When splitting in training and testing sets, we should be careful that the split is **stratified**, meaning that we do not end with disproportionate data! For instance, in the email spam example, we should have a similar proportion of spam emails on both the train and the test sets.
+
+There are other data splitting schemes that are applied to the *train* set. These schemes attempt to replicate slightly different versions of the train set, doing an additional data split, on which the model is evaluated. The most common is *k-fold cross validation* which means that the training set is split in *k* parts, and the model is trained successively in *k-1* and evaluated in the remaining part.
+
+These strategies only applied to supervised learning. 
+
+## Bias-variance tradeoff
+
+Another important strategy is the **learning curve**, which is a chart showing the number of data points on the horizontal axis and the total model error on the vertical axis, for both the train and test sets. 
+
+What is the point of this chart? It tells us whether the model suffers from **bias** (train and test error are high). This means that the relationship is more complicated than we thought. For instance, if we have a non-linear relationship in our data but we are trying to fit a linear model we will surely have a bias problem. The remedy here is to use more sophisticated models.
+
+If we see a large gap between error in the train and test set, we are in a situation with high variance. This often suggests that we do no have enough data. In that case, it is usually a good idea to add more data.
+
+Note that for most types of models, there is a saturation point on which there is no improvement in performance, regardless of the amount of data. A notable exception is deep neural networks, which often keep improving in performance as you keep adding data.
+
+
+# Clustering
+
+Let's begin with an ecommerce example. Suppose you have some transaction data from an e-shop and you want to create segments of your customers.
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+df <- read.csv("./data/orders.csv")
+```
+
+Let's check that everything loaded correctly:
+
+```{r}
+head(df)
+```
+
+First we must make sure that the date is correctly interpreted:
+
+```{r}
+df$Date <- as.Date(df$Date, format = "%m/%d/%Y")
+```
+
+
+We will use `dplyr` for data manipulation. Let's recall some important operations:
+
+```{r}
+# select 
+df %>% select(Customer.ID, Country) %>% head
+
+```
+
+we also have filter:
+
+```{r}
+df %>% filter(Customer.ID=='7', Subtotal > 0.4)
+```
+
+and group operations:
+
+```{r}
+df %>% 
+  group_by(Customer.ID) %>% 
+  summarise(Monetary = sum(Subtotal)) %>% 
+  head
+
+```
+
+We can combine group operations with other verbs:
+
+```{r}
+df %>% 
+  group_by(Customer.ID) %>%
+  summarise(Frequency = n()) %>% # count(*) in SQL
+  filter(Frequency > 10)
+
+```
+
+We need to preprocess the data first. We will produce an aggregate summary per customer, called the RFM segmentation. This stands for:
+
+- Recency: Days since last purchase.
+- Frequency: Number of purchases.
+- Monetary: Money spent.
+
+Let's calculate RFM with dplyr:
+
+```{r}
+rfm <- df%>%
+  group_by(Customer.ID) %>%
+  summarise(last_purchase=max(Date), 
+            recency = as.double(difftime("2016-01-01",
+                                         as.Date(last_purchase, origin="1970-01-01"),  
+                                        units = "day")), 
+            frequency = n(), 
+            monetary = sum(Subtotal)
+            )
+  
+head(rfm)
+
+```
+
+
+Let's get an overview of our data:
+
+```{r}
+ggplot(rfm, aes(x=recency, y = frequency, color = monetary)) + geom_point()
+
+```
+
+It seems that we have a few large customers. Are our loyal, more than one purchase customers, much better than the one timers? 
+
+```{r}
+rfm %>% 
+  mutate(one_time = ifelse(frequency==1, "One-timer","More than once")) %>%
+  group_by(one_time) %>%
+  summarise(avg_spent = mean(monetary))
+```
+
+It seems so, but let's look at the full distribution:
+
+```{r}
+rfm2 <- rfm %>% 
+        mutate(one_time = ifelse(frequency==1, "One-timer","More than once"), 
+               avg_per_purchase = monetary/frequency) %>%
+        group_by(one_time)
+rfm2 %>% ggplot(aes(x=one_time, y=monetary))+geom_violin()
+
+```
+
+
+
+Ok, we obviously have an outlier
+
+```{r}
+rfm2 %>% 
+  filter(monetary<1000)%>%
+  ggplot(aes(x=as.factor(one_time), y=monetary))+geom_violin()+
+  xlab("One-time purchasers")+theme_bw()
+
+```
+
+  
+### Exercise (optional)
+  
+  If you want to get familiar with dplyr, try the following:
+
+- What is the revenue per country/region?
+- Which country/region has the largest sale
+- What is the revenue of one-time purchasers per country?
+
+
+## K-means
+
+The algorithm works as follows: 
+
+- Fix a number *k*, the number of clusters/subgroups.
+- Randomly initialize *k* points from the data as the centre.
+- Calculate the centre of each subgroup as the average position of all observations is that subgroup.
+- Each observation is then assigned to the group of its nearest centre, and repeat the previous step.
+
+The algorithm stops when the *total within-cluster sum of squares*, that is, the distance from each point to its centre, and summed over all points, stops decreasing. Alternatively, the algorithm can stop after a fixed number of iterations.
+
+To determine *k*, we try different values and plot, for each *k*, the total within-cluster sum of squares. We choose the value of *k* where the "elbow" is.
+
+Let's build the elbow plot for our data:
+
+```{r}
+kmax <- 15
+tot.withinss <- sapply(1:kmax, function(k){kmeans(rfm[,c("recency","frequency", "monetary")],k)$tot.withinss})
+plot(1:kmax, tot.withinss, type = "l")
+
+```
+
+From the plot it seems like 6 is a reasonable choice
+
+```{r}
+km <- kmeans(rfm[,c("recency","frequency", "monetary")],6)
+rfm$cluster <- km$cluster
+
+```
+
+How can we interprete the clusters?                
+
+```{r, message=FALSE, echo=FALSE}
+library(stringr)
+
+m_rec <- mean(rfm$recency)
+m_freq <- mean(rfm$frequency)
+m_mon <- mean(rfm$monetary)
+
+
+output <- rfm %>% 
+  group_by(cluster) %>% 
+  summarise(avg_rec = mean(recency), 
+            avg_freq = mean(frequency), 
+            avg_mon = mean(monetary)) %>% 
+  mutate(label = stringr::str_c(ifelse(avg_rec>m_rec, "H","L"),
+                       ifelse(avg_freq>m_freq, "H","L"),
+                       ifelse(avg_mon>m_mon, "H","L")
+  ))
+```
+
+Some possible interpretation for the labels:
+
+- LHH: Diamond segment, our best customers
+- LHL: Frequent buyers, figure out what do they like and try to cross-sell something
+- LLH: Promising
+- LLL: Hard to assess
+- HHH: Sleeping beauties, good customers that need reactivation
+- HHL: Budget-conscious, worth reactivating if the goal is increase market share
+- HLH: Worth reactivating if the goal is to increase sales
+- HLL: Probably lost, may not be worth reactivating
+
+
+
+# Classification and Regression with white-box models
+
+
+## Linear Regression
+
+Linear models can be used to model the dependency of a regression target $y$ on $p$ features $x$. For a singular instance $i$, we assume that there exists coefficients $\beta_i$ such that:
+
+$$y_{i}=\beta_{0}+\beta_{1}x_{i1}+\ldots+\beta_{p}x_{ip}+\epsilon_{i}$$
+
+The i-th instance's outcome is a weighted sum of its $p$ features.
+The $\beta_{j}$ represent the learned feature weights or coefficients.
+The $\epsilon_{i}$ is the error we are still making, i.e. the difference between the predicted outcome and the actual outcome.
+
+Different methods can be used to estimate the optimal weight vector $\hat{\boldsymbol{\beta}}$.
+The ordinary least squares method is commonly used to find the weights that minimise the squared difference between the actual and the estimated outcome:
+
+$$\hat{\boldsymbol{\beta}}=\arg\!\min_{\beta_0,\ldots,\beta_p}\sum_{i=1}^n\left(y_i-\left(\beta_0+\sum_{j=1}^p\beta_jx_{ij}\right)\right)^{2}$$
+
+Let's try that in the apartments data set. This contains information of apartments in Warsaw.
+
+```{r}
+apts <- read.csv("./data/apartments.csv")
+head(apts)
+```
+
+```{r, message=FALSE}
+apts %>% ggplot(aes(x=surface, y=m2.price))+geom_point()+geom_smooth()
+```
+
+
+```{r, message=FALSE}
+apts %>% ggplot(aes(x=surface, y=m2.price))+geom_point()+geom_smooth()+facet_wrap(~district)
+```
+
+Let's do a linear model to predict price per square meter. First we need to split into train and test sets:
+
+```{r}
+idxs <- sample(nrow(apts), size=0.1*nrow(apts))
+apts.train <- apts[-idxs,]
+apts.test <- apts[idxs,]
+```
+
+Ok, so time to train our model. We will compute the coefficients in the formula above using one of `R`'s built-in functions:
+
+
+```{r}
+model <- lm(m2.price ~., data=apts.train)
+summary(model)
+```
+
+Is this a good model or a bad model? Let's look at what it does on the test set:
+
+```{r}
+apts.preds <- predict(model, newdata = apts.test[,2:ncol(apts.test)])
+```
+
+We can measure the total error that the model did, which for linear regression is the square root of the average sum of squared errors:
+
+```{r}
+sqrt(sum((apts.preds-apts.test[,1])**2)/nrow(apts.test))
+
+```
+
+Not very useful, right? Let's rather plot the predictions against the truth to see if we can get a better feeling of what is going on.
+
+```{r}
+plot(apts.preds, apts.test[,1])
+abline(0,1, col='red')
+```
+
+
+
+A slightly different way it's to use `caret`.
+
+```{r, message=FALSE}
+library(caret)
+set.seed(54321)
+idxs <- createDataPartition(apts$m2.price,
+                               times = 1,
+                               p = 0.7,
+                               list = FALSE)
+apts.train <- apts[idxs,]
+apts.test <- apts[-idxs,]
+
+```
+
+Now let's decide on the training protocol:
+
+```{r}
+train.control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 3,
+                              search = "grid")
+
+caret.cv <- train(m2.price ~ ., 
+                  data = apts.train,
+                  method = "lm",
+                  trControl = train.control)
+
+caret.cv
+```
+
+
+
+## Logistic Regression
+
+A good example for classification is **credit card fraud**. Fraud is difficult to predict, and many banks and other payment processors have to account for it, sometimes having fraud rates as high as 10%. With so many controls in place and so many vendors, fraud is usually much smaller at least in Europe.
+
+Let's explore with an extract of the Credit Card dataset, available at the data science community website Kaggle.
+
+
+
+```{r, echo = TRUE}
+tx <- read.csv("./data/creditcard.csv", 
+               stringsAsFactors = F)
+library(tidyverse)
+```
+
+What is the fraud rate?
+
+```{r}
+table(tx$Class)/nrow(tx)*100
+```
+
+
+
+Could there be a seasonality element in fraud? Perhaps... let's take a look.
+
+```{r, echo=TRUE}
+tx %>% 
+  ggplot(aes(Time,Amount))+
+  geom_point(position = "jitter")+
+  facet_grid(Class~.)
+```
+
+It seems that fraud is evenly distributed... Let's look at smaller transactions
+
+```{r, echo=TRUE}
+
+tx$Class <- as.factor(tx$Class)
+tx %>% 
+  filter(Amount<300) %>%
+  ggplot(aes(Class,Amount))+
+  geom_violin()
+```
+
+This might be counterintuitive, but is definitely not news for victims of fraud: very often the fraudulent transactions are small, but repeated and at scale.
+
+We apply a similar workflow as before:
+
+```{r, echo=TRUE}
+## Remove the time and class column
+
+idxs <- sample(nrow(df), size=0.2*nrow(tx))
+train <- tx[-idxs,]
+test <- tx[idxs,]
+```
+
+
+
+```{r, echo=TRUE}
+y_train <- train$Class
+y_test <- test$Class
+
+train$Time <- NULL
+X_test <- test %>% select(-one_of(c("Time","Class")))
+```
+
+We need to use "generalized linear models" for logistic regression.
+
+```{r, echo=T}
+model <- glm(Class ~.,
+             family=binomial(link='logit'),
+             data=train)
+
+y_preds <- predict(model, 
+                   newdata = X_test, 
+                   type="response")
+```
+
+
+
+Let's examine the predictions agains the truth:
+
+```{r}
+threshold <- 0.1
+table(ifelse(y_preds>threshold,1,0), y_test)
+```
+
+A common plot is the ROC curve. This tells us, roughly, the probability of our model being right.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# ROC
+# install.packages("ROCR")
+library(ROCR)
+pred <- prediction(y_preds, y_test)
+perf <- performance(pred, 
+                    measure = "tpr", 
+                    x.measure = "fpr") 
+
+```
+
+
+
+```{r, echo=TRUE}
+plot(perf, col=rainbow(10))
+```
+
+
+
+
+## Decision Trees
+
+A different kind of white-box model is decision trees. Let's look at an example of it in the Titanic dataset.
+
+```{r, warning=F}
+titanic <- read.csv("./data/titanic.csv")
+titanic$Survived <- as.factor(titanic$Survived)
+str(titanic)
+```
+
+Let's select the appropriate columns:
+```{r, warning=F, message=F, echo=FALSE}
+library(tidyverse)
+titanic <- titanic %>% select(-one_of(c("PassengerId",
+                                        "Fare",
+                                        "Ticket",
+                                        "Name",
+                                        "Cabin")))
+```
+
+Now we split in train and test sets again:
+
+```{r}
+idxs <- sample(nrow(titanic),0.8*nrow(titanic))
+train <- titanic[idxs,]
+test <- titanic[-idxs,]
+
+```
+
+And create a tree model:
+
+```{r, message=FALSE}
+library(rpart)
+library(rpart.plot)
+tree <- rpart(Survived ~ ., 
+              data=train, 
+              method="class")
+
+```
+
+
+What did the model do?
+
+```{r}
+rpart.plot(tree)
+```
+
+What does each box show? It shows:
+
+- Predicted class
+- Predicted prob of survival    
+- Percentage of observations in the node
+
+Let's do some sanity check and try to see what the model learned:
+
+```{r, message=FALSE, echo=FALSE}
+train %>% ggplot(
+  aes(x=Sex, y=Age, color=Survived)
+  )+
+  geom_point(position="jitter")
+```
+
+
+Let's fine-tune our model:
+
+```{r}
+printcp(tree)
+
+```
+
+You can specify how to split, using the cp values above:
+
+```{r}
+tree2 <- rpart(Survived ~., 
+               data = train,
+               method="class", 
+               control=rpart.control(cp=0.035))
+```
+
+This gives us a different split:
+
+```{r}
+rpart.plot(tree2)
+```
+
+We can also prune the tree: this means getting rid of branches that are too deep.
+
+```{r}
+tree3 <- prune(tree, cp=0.035)
+rpart.plot(tree3)
+```
+
+
+## Exercise
+
+- Use the airbnb data to estimate the price (regression model). What are the most important drivers for price? What is the error?
+
+- With the same data, estimate whether the accommodation will get 5 stars or not. Create your model with the train data, and estimate the performance with the test data. Compare logistic regression and decision trees.
+
+Some gotchas here:
+
+- There are some houses that are unranked.
+- You need to create an additional variable for the flag. You can use the `ifelse` function for this.
+
+
+# Ensemble Methods: Here comes the black-box
+
+It turns out that decision trees have low bias (they can learn the data well) but high variance, specially when we have few samples: Ensemble methods are useful to average high-variance estimators to reduce variance. Basically errors eat each other out.
+
+This has some fundament in probability theory: If you have $n$ independent observations, $X_1, X_2, \ldots X_n$, each with variance $\sigma^2$, then the variance of the mean is $\sigma^2/n$.
+
+One way to do that is through **bagging**:
+
+- Take (with replacement) different samples of the training set and create a predictor for each of these. 
+- Take as prediction the average of the predictions (majority vote for classification, average for regression).
+- Using a sufficiently large number of predictors, this would work fine.
+
+An alternative is **random forests**:
+- Issue: creating different models might be not so useful if all predictors are the same.
+- Solution: Do bagging, but choosing randomly different predictors each time.
+
+And, finally, **boosting**:
+- Start from an initial decision tree. 
+- "Smooth" improvement using three parameters:
+  + Number of estimators.
+  + Shrinkage parameter $\lambda$ (0.01-0.001, problem dependent).
+  + Number of splits on each tree, $d$. $d=1$ usually works fine.
+  
+
+We will start with the `randomForest` package
+```{r, message=F, warning=FALSE, echo=FALSE}
+library(randomForest)
+set.seed(1)
+rf <- randomForest(Survived~., 
+                   data=train, 
+                   importance = TRUE, 
+                   na.action = na.omit)
+rf
+```
+
+We can change the number of variables tried at each split:
+
+```{r}
+rf2 <- randomForest(Survived~., 
+                   data=train, 
+                   importance = TRUE, 
+                   mtry = 6,
+                   na.action = na.omit)
+rf2
+```
+
+
+We cannot plot all the decision trees used (500 in the example above!) but we can extract out some statistics to understand what is the model looking into with more detail:
+
+
+```{r}
+importance(rf)
+```
+
+It doesn't tell us much, but let's look at it with the `varImpPlot` function from `caret`.
+
+```{r}
+varImpPlot(rf)
+```
+
+Another popular choice is Gradient Boosting Machine:
+```{r, message=F, echo=FALSE}
+library(gbm)
+set.seed(1)
+gb <- gbm(Survived~., 
+          data=train, 
+          distribution="gaussian",
+          n.trees = 5000,
+          shrinkage = 0.005, 
+          interaction.depth=3,
+          train.fraction = 0.7
+          )
+summary(gb)
+```
+
+
+Let's now create a **learning curve** for our model. We saw what is it doing, let's see if we could make it better, by adding perhaps more data.
+
+
+```{r, eval=T, echo=T}
+errors <- data.frame()
+test$Survived <- as.numeric(test$Survived)-1
+train$Survived <- as.numeric(train$Survived)-1
+for(i in 3:nrow(train)){
+  trainSmall <- train[1:i,]
+  tree <- rpart(Survived~., data=trainSmall)
+  trainPreds <- predict(tree, trainSmall)
+  testPreds <- predict(tree, test)
+  trainError <- sum((trainSmall$Survived-trainPreds)**2)
+  trainError <- trainError/nrow(trainSmall)
+  testError <-  sum((test$Survived-testPreds)**2)
+  testError <- testError/nrow(test)
+  errors <- rbind(errors,data.frame(batchSize=i,
+                                    train=trainError,
+                                    test=testError))
+}
+
+```
+
+Now let's go for the learning curve!
+
+```{r}
+errors %>% ggplot()+
+  geom_line(aes(x=batchSize,y=train, col="Train"))+
+  geom_line(aes(x=batchSize,y=test,col="Test"))+
+  ylab("Error")
+
+```
+
+
+## Exercise
+
+- Use the `airbnb_brno_train.csv` data to estimate whether an accommodation will get a 5-star review (overall satisfaction = 5). What are the main drivers of good reviews?
+- Use the `airbnb_brno_test.csv` data set to test your model.
+
+**Bonus:** Curious how to do maps in `R`? 
+```{r, warning=FALSE, echo=FALSE, eval=FALSE}
+library(leaflet)
+airbnb <- read.csv("./data/airbnb_brno_train.csv")
+airbnb$is_high_review <- ifelse(airbnb$overall_satisfaction==5,T,F)
+
+pal <- colorFactor(c("navy", "red"), domain = c(T,F))
+
+
+leaflet(airbnb) %>% 
+  addTiles() %>% 
+  addCircleMarkers(radius=5
+                   , color=~pal(is_high_review)
+                   , stroke = FALSE
+                   , opacity = 1) %>%
+  addLegend("bottomright", title="Highly rated Airbnb's", pal=pal, values=~is_high_review)
+```
+
+
+# Interpretable black-box models
+
+```{r, echo=FALSE, message=FALSE}
+set.seed(42)
+library("iml")
+library("randomForest")
+
+bike <- read.csv("./data/bike_day.csv")
+bike$instant <- NULL
+bike$dteday <- NULL
+bike$registered <- NULL
+bike$casual <- NULL
+bike$yr <- NULL
+head(bike)
+```
+
+
+Let's split our data in $X$ (predictors) and $y$ (response)
+
+```{r}
+X <- bike %>% select(-c("cnt"))
+
+y <- bike[,"cnt"]
+```
+
+
+Now let's make a model:
+```{r, message=FALSE, echo=FALSE}
+library(caret)
+
+set.seed(123)
+rf <- randomForest(x=X, y=y,
+                   ntree = 100,
+                   type="regression")
+rf
+```
+
+
+The package `iml` has a Predictor() %>% container, that will be used to operate on our data.
+
+```{r}
+predictor <- Predictor$new(rf, data=X, y=y)
+```
+
+We can plot feature importance, as before:
+
+```{r}
+varImpPlot(rf)
+```
+
+But we can do more sophisticated analysis:
+
+```{r}
+ale <- FeatureEffect$new(predictor, feature = "windspeed", method = "ale")
+ale$plot()
+```
+
+
+
+
+Another way to make the models more interpretable is to replace the black box with a simpler model - a **surrogate model**. We take the predictions of the black box model (in our case the random forest) and train a decision tree on the original features and the predicted outcome. The plot shows the terminal nodes of the fitted tree. The maxdepth parameter controls how deep the tree can grow and therefore how interpretable it is.
+
+
+```{r}
+tree <- TreeSurrogate$new(predictor)
+plot(tree)
+```
+
+We can also explain why a particular prediction was done:
+
+```{r, message=FALSE, echo=FALSE}
+lime.explain <- LocalModel$new(predictor, x.interest = X[15,], k=8)
+plot(lime.explain)
+```
+
+
+
+An alternative for explaining individual predictions is a method from coalitional game theory named **Shapley value**. Assume that for one data point, the feature values play a game together, in which they get the prediction as a payout. The Shapley value tells us how to fairly distribute the payout among the feature values.
+
+```{r}
+shapley <- Shapley$new(predictor, x.interest = X[15,])
+shapley$plot()
+```
+
